@@ -9,6 +9,7 @@ from src.data.loaders import (
     load_joshua_project_data,
     load_open_doors_data,
     load_wef_ttdi_data,
+    load_action_sports_data,
 )
 
 
@@ -158,6 +159,45 @@ def merge_all_data() -> pd.DataFrame:
     if 'ttdi_score' in merged.columns:
         median_ttdi = merged['ttdi_score'].median()
         merged['ttdi_score'] = merged['ttdi_score'].fillna(median_ttdi)
+
+    # Merge action sports data
+    merged = merge_action_sports(merged)
+
+    return merged
+
+
+def merge_action_sports(df: pd.DataFrame) -> pd.DataFrame:
+    """Merge action sports availability data with main country data.
+
+    Args:
+        df: Main country DataFrame with iso_alpha_3 column
+
+    Returns:
+        DataFrame with action sports boolean columns added
+    """
+    action_sports_df = load_action_sports_data()
+
+    if action_sports_df.empty:
+        return df
+
+    # Get all action sport columns (excluding country_name and iso_alpha_3)
+    sport_columns = [col for col in action_sports_df.columns
+                     if col not in ['country_name', 'iso_alpha_3']]
+
+    # Select only necessary columns for merge
+    action_sports_subset = action_sports_df[['iso_alpha_3'] + sport_columns].copy()
+
+    # Merge on ISO code
+    merged = df.merge(
+        action_sports_subset,
+        on='iso_alpha_3',
+        how='left'
+    )
+
+    # Fill any missing sport values with False
+    for col in sport_columns:
+        if col in merged.columns:
+            merged[col] = merged[col].fillna(False).astype(bool)
 
     return merged
 

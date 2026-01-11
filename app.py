@@ -14,7 +14,12 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.data.loaders import load_processed_data, save_processed_data
+from src.data.loaders import (
+    load_processed_data,
+    save_processed_data,
+    get_action_sports_list,
+    sport_display_to_column,
+)
 from src.data.processors import merge_all_data, calculate_religious_need_score, calculate_missionary_gap_score
 from src.visualization.maps import create_choropleth
 from src.visualization.tables import format_rankings_dataframe
@@ -252,7 +257,7 @@ def get_default_weights():
             'action_sports': 0.5,
             'outreach': 0.5,
         },
-        'combination_method': 'multiply'
+        'combination_method': 'weighted_average'
     }
 
 
@@ -267,13 +272,8 @@ def reset_weights_callback():
     st.session_state['weight_religious_need'] = defaults['outreach_weights']['religious_need']
     st.session_state['weight_missionary_gap'] = defaults['outreach_weights']['missionary_gap']
     st.session_state['weight_legal_openness'] = defaults['outreach_weights']['legal_openness']
-    st.session_state['combination_method'] = defaults['combination_method']
-
-    # Reset combined weights if they exist
-    if 'weight_action_combined' in st.session_state:
-        st.session_state['weight_action_combined'] = defaults['combined_weights']['action_sports']
-    if 'weight_outreach_combined' in st.session_state:
-        st.session_state['weight_outreach_combined'] = defaults['combined_weights']['outreach']
+    st.session_state['weight_action_combined'] = defaults['combined_weights']['action_sports']
+    st.session_state['weight_outreach_combined'] = defaults['combined_weights']['outreach']
 
 
 def render_weight_sidebar():
@@ -379,35 +379,23 @@ def render_weight_sidebar():
     # Combined Score Settings
     st.sidebar.subheader("Combined Score")
 
-    combination_method = st.sidebar.radio(
-        "Combination Method",
-        options=["multiply", "weighted_average"],
-        format_func=lambda x: "Multiply (A × O / 100)" if x == "multiply" else "Weighted Average",
-        help="How to combine Action Sports and Outreach scores",
-        key="combination_method"
+    action_weight = st.sidebar.slider(
+        "Action Sports Weight",
+        min_value=0.0, max_value=1.0, value=0.5, step=0.05,
+        key="weight_action_combined"
+    )
+    outreach_weight = st.sidebar.slider(
+        "Outreach Weight",
+        min_value=0.0, max_value=1.0, value=0.5, step=0.05,
+        key="weight_outreach_combined"
     )
 
-    action_weight = 0.5
-    outreach_weight = 0.5
-
-    if combination_method == "weighted_average":
-        action_weight = st.sidebar.slider(
-            "Action Sports Weight",
-            min_value=0.0, max_value=1.0, value=0.5, step=0.05,
-            key="weight_action_combined"
+    total_combined = action_weight + outreach_weight
+    if total_combined > 0:
+        st.sidebar.caption(
+            f"Normalized: Action {action_weight/total_combined:.0%}, "
+            f"Outreach {outreach_weight/total_combined:.0%}"
         )
-        outreach_weight = st.sidebar.slider(
-            "Outreach Weight",
-            min_value=0.0, max_value=1.0, value=0.5, step=0.05,
-            key="weight_outreach_combined"
-        )
-
-        total_combined = action_weight + outreach_weight
-        if total_combined > 0:
-            st.sidebar.caption(
-                f"Normalized: Action {action_weight/total_combined:.0%}, "
-                f"Outreach {outreach_weight/total_combined:.0%}"
-            )
 
     return {
         'action_sports_weights': {
@@ -424,8 +412,61 @@ def render_weight_sidebar():
             'action_sports': action_weight,
             'outreach': outreach_weight,
         },
-        'combination_method': combination_method
+        'combination_method': 'weighted_average'
     }
+
+
+def render_action_sports_filter() -> list:
+    """Render the action sports filter in the sidebar.
+
+    Returns:
+        List of selected action sport display names
+    """
+    st.sidebar.subheader("Filter by Action Sports")
+
+    action_sports_list = get_action_sports_list()
+
+    selected_sports = st.sidebar.multiselect(
+        "Select sports to filter",
+        options=action_sports_list,
+        default=[],
+        help="Shows countries with ANY of the selected sports (OR logic)",
+        key="action_sports_filter"
+    )
+
+    if selected_sports:
+        st.sidebar.caption(f"Filtering by {len(selected_sports)} sport(s)")
+
+    st.sidebar.divider()
+
+    return selected_sports
+
+
+def apply_action_sports_filter(df: pd.DataFrame, selected_sports: list) -> pd.DataFrame:
+    """Filter DataFrame to only include countries with selected action sports.
+
+    Args:
+        df: DataFrame with action sports boolean columns
+        selected_sports: List of selected sport display names
+
+    Returns:
+        Filtered DataFrame (countries with ANY selected sport)
+    """
+    if not selected_sports:
+        return df
+
+    # Convert display names to column names
+    sport_columns = [sport_display_to_column(sport) for sport in selected_sports]
+
+    # Filter to only include columns that exist in the DataFrame
+    valid_columns = [col for col in sport_columns if col in df.columns]
+
+    if not valid_columns:
+        return df
+
+    # Apply OR logic: keep rows where ANY of the selected sports is True
+    mask = df[valid_columns].any(axis=1)
+    return df[mask]
 
 
 def get_top_countries(df: pd.DataFrame, score_type: str = "combined", top_n: int = 10) -> pd.DataFrame:
@@ -623,9 +664,7 @@ def render_methodology(weights: dict):
 
         ### Combined Score
 
-        Method: **{weights['combination_method'].replace('_', ' ').title()}**
-
-        {"Multiplies Action Sports × Outreach, divided by 100." if weights['combination_method'] == 'multiply' else 'Weighted average of both scores.'}
+        Weighted average of Action Sports and Outreach scores, with adjustable weights in the sidebar.
         """)
 
     with st.expander("Data Sources", expanded=False):
@@ -676,6 +715,9 @@ def main():
         st.error("Unable to load data. Please ensure data files exist in data/raw/")
         return
 
+    # Render action sports filter (at top of sidebar)
+    selected_sports = render_action_sports_filter()
+
     # Render sidebar with weight controls
     weights = render_weight_sidebar()
 
@@ -687,6 +729,13 @@ def main():
         combined_weights=weights['combined_weights'],
         combination_method=weights['combination_method']
     )
+
+    # Apply action sports filter if any sports are selected
+    df = apply_action_sports_filter(df, selected_sports)
+
+    # Show filter status in sidebar
+    if selected_sports:
+        st.sidebar.success(f"Showing {len(df)} countries with selected sports")
 
     # Header
     render_header()
