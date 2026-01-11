@@ -3,15 +3,9 @@
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
+import numpy as np
 from typing import Optional
 
-
-# Color scales for different score types
-COLOR_SCALES = {
-    'combined': 'Viridis',
-    'action_sports': 'Blues',
-    'outreach': 'Oranges',
-}
 
 # Titles for different score types
 SCORE_TITLES = {
@@ -20,20 +14,28 @@ SCORE_TITLES = {
     'outreach': 'Christian Outreach Opportunity Score',
 }
 
+# Number of top countries to show on the map
+TOP_N_COUNTRIES = 100
+
 
 def create_choropleth(
     df: pd.DataFrame,
     score_type: str = 'combined',
     height: int = 500,
     show_colorbar: bool = True,
+    top_n: int = TOP_N_COUNTRIES,
 ) -> go.Figure:
     """Create a world choropleth map for the specified score type.
+
+    Shows only the top N countries with a blue-to-red color scale.
+    Countries outside top N are shown in gray.
 
     Args:
         df: DataFrame with country data including iso_alpha_3 and scores
         score_type: Type of score to display ('combined', 'action_sports', 'outreach')
         height: Height of the figure in pixels
         show_colorbar: Whether to show the color bar
+        top_n: Number of top-ranked countries to display with colors
 
     Returns:
         Plotly Figure object
@@ -55,25 +57,48 @@ def create_choropleth(
     else:
         name_col = 'iso_alpha_3'
 
+    # Filter to top N countries for coloring
+    if rank_col in plot_df.columns:
+        # Countries ranked within top N get their actual score
+        # Countries outside top N get NaN (will appear gray)
+        plot_df['display_score'] = plot_df.apply(
+            lambda row: row[score_col] if row[rank_col] <= top_n else np.nan,
+            axis=1
+        )
+
+        # Calculate min/max from top N countries only
+        top_n_df = plot_df[plot_df[rank_col] <= top_n]
+        if not top_n_df.empty:
+            score_min = top_n_df[score_col].min()
+            score_max = top_n_df[score_col].max()
+        else:
+            score_min, score_max = 0, 100
+    else:
+        plot_df['display_score'] = plot_df[score_col]
+        score_min = plot_df[score_col].min()
+        score_max = plot_df[score_col].max()
+
     # Build hover template
     hover_data = {
         'iso_alpha_3': False,
+        'display_score': False,  # Hide the display column
         score_col: ':.1f',
     }
 
     if rank_col in plot_df.columns:
         hover_data[rank_col] = True
 
-    # Create choropleth
+    # Create choropleth with blue-to-red color scale
+    # Blue = lower scores, Red = higher scores (best)
     fig = px.choropleth(
         plot_df,
         locations='iso_alpha_3',
-        color=score_col,
+        color='display_score',
         hover_name=name_col,
         hover_data=hover_data,
-        color_continuous_scale=COLOR_SCALES.get(score_type, 'Viridis'),
+        color_continuous_scale='RdYlBu_r',  # Red-Yellow-Blue reversed (blue=low, red=high)
         title=SCORE_TITLES.get(score_type, f'{score_type.title()} Score'),
-        labels={score_col: 'Score', rank_col: 'Rank'},
+        labels={score_col: 'Score', rank_col: 'Rank', 'display_score': 'Score'},
     )
 
     # Update layout
@@ -83,7 +108,7 @@ def create_choropleth(
             showcoastlines=True,
             coastlinecolor='lightgray',
             showland=True,
-            landcolor='white',
+            landcolor='#e8e8e8',  # Light gray for unranked countries
             showocean=True,
             oceancolor='lightblue',
             projection_type='natural earth',
@@ -92,14 +117,14 @@ def create_choropleth(
         height=height,
         margin=dict(l=0, r=0, t=40, b=0),
         coloraxis_colorbar=dict(
-            title='Score',
-            tickvals=[0, 25, 50, 75, 100],
-            ticktext=['0', '25', '50', '75', '100'],
+            title=f'Score<br>(Top {top_n})',
+            tickmode='auto',
+            nticks=5,
         ) if show_colorbar else None,
     )
 
-    # Update color axis range
-    fig.update_coloraxes(cmin=0, cmax=100)
+    # Update color axis range to min-max of top N countries
+    fig.update_coloraxes(cmin=score_min, cmax=score_max)
 
     return fig
 
